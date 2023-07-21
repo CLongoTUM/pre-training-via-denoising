@@ -36,7 +36,7 @@ max_z: 100
 model: equivariant-transformer
 neighbor_embedding: true
 ngpus: -1
-num_epochs: 30
+num_epochs: 2 # 30
 num_steps: 400000
 num_heads: 8
 num_layers: 8
@@ -54,7 +54,7 @@ splits: null
 standardize: false
 test_interval: 1
 test_size: 100
-train_size: null
+train_size: 100 # null
 trainable_rbf: false
 val_size: 100
 weight_decay: 0.0
