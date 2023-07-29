@@ -35,18 +35,17 @@ from torch_geometric.data import InMemoryDataset, download_url, extract_zip, Dat
 from torch_geometric.nn import MessagePassing
 from torch_cluster import radius_graph
 
+ 
 class PCQM4MV2_XYZ(InMemoryDataset):
     r"""3D coordinates for molecules in the PCQM4Mv2 dataset (from zip).
     """
-
-    raw_url = 'http://ogb-data.stanford.edu/data/lsc/pcqm4m-v2_xyz.zip'
 
     def __init__(self, root: str, transform: Optional[Callable] = None,
                  pre_transform: Optional[Callable] = None,
                  pre_filter: Optional[Callable] = None, dataset_arg: Optional[str] = None):
         assert dataset_arg is None, "PCQM4MV2 does not take any dataset args."
         super().__init__(root, transform, pre_transform, pre_filter)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        self.data, self.slices = torch.load('data/pcq/processed/pcqm4mv2__xyz.pt')
 
     @property
     def raw_file_names(self) -> List[str]:
@@ -57,56 +56,11 @@ class PCQM4MV2_XYZ(InMemoryDataset):
         return 'pcqm4mv2__xyz.pt'
 
     def download(self):
-        file_path = download_url(self.raw_url, self.raw_dir)
-        extract_zip(file_path, self.raw_dir)
-        os.unlink(file_path)
+        return None
 
     def process(self):
-        dataset = PCQM4MV2_3D(self.raw_paths[0])
-        
-        data_list = []
-        for i, mol in enumerate(tqdm(dataset)):
-            pos = mol['coords']
-            pos = torch.tensor(pos, dtype=torch.float)
-            z = torch.tensor(mol['atom_type'], dtype=torch.long)
+        return None
 
-            data = Data(z=z, pos=pos, idx=i)
-
-            if self.pre_filter is not None and not self.pre_filter(data):
-                continue
-            if self.pre_transform is not None:
-                data = self.pre_transform(data)
-
-            data_list.append(data)
-
-        torch.save(self.collate(data_list), self.processed_paths[0])
-
-class PCQM4MV2_3D:
-    """Data loader for PCQM4MV2 from raw xyz files.
-    
-    Loads data given a path with .xyz files.
-    """
-    
-    def __init__(self, path) -> None:
-        self.path = path
-        self.xyz_files = glob.glob(path + '/*/*.xyz')
-        self.xyz_files = sorted(self.xyz_files, key=self._molecule_id_from_file)
-        self.num_molecules = len(self.xyz_files)
-        
-    def read_xyz_file(self, file_path):
-        atom_types = np.genfromtxt(file_path, skip_header=1, usecols=range(1), dtype=str)
-        atom_types = np.array([ase.Atom(sym).number for sym in atom_types])
-        atom_positions = np.genfromtxt(file_path, skip_header=1, usecols=range(1, 4), dtype=np.float32)        
-        return {'atom_type': atom_types, 'coords': atom_positions}
-    
-    def _molecule_id_from_file(self, file_path):
-        return int(os.path.splitext(os.path.basename(file_path))[0])
-    
-    def __len__(self):
-        return self.num_molecules
-    
-    def __getitem__(self, idx):
-        return self.read_xyz_file(self.xyz_files[idx])
 
 class DataModule(LightningDataModule):
     def __init__(self, hparams, dataset=None):
@@ -127,6 +81,9 @@ class DataModule(LightningDataModule):
             else:
                 transform = None
             
+            # self.dataset_test = torch.load('data/pcq/processed/pcqm4mv2__xyz.pt')[0]
+            # self.dataset_maybe_noisy = transform(self.dataset_test)
+
             # Noisy version of dataset
             self.dataset_maybe_noisy = PCQM4MV2_XYZ(
                 self.hparams["dataset_root"], 
@@ -141,15 +98,79 @@ class DataModule(LightningDataModule):
                 transform = None
             )
 
-        self.idx_train, self.idx_val, self.idx_test = make_splits(
-            len(self.dataset),
-            self.hparams["train_size"],
-            self.hparams["val_size"],
-            self.hparams["test_size"],
-            self.hparams["seed"],
-            join(self.hparams["log_dir"], "splits.npz"),
-            self.hparams["splits"],
-        )
+        dset_len = len(self.dataset)
+        train_size = self.hparams["train_size"]
+        val_size = val_size = self.hparams["val_size"]
+        test_size = self.hparams["test_size"]
+        seed = self.hparams["seed"]
+        filename = join(self.hparams["log_dir"], "splits.npz")
+        splits = self.hparams["splits"]
+        order = None 
+        
+        if self.hparams["splits"] is not None:
+            splits = np.load(self.hparams["splits"])
+            idx_train = splits["idx_train"]
+            idx_val = splits["idx_val"]
+            idx_test = splits["idx_test"]
+        else:
+            assert (train_size is None) + (val_size is None) + (
+                test_size is None
+            ) <= 1, "Only one of train_size, val_size, test_size is allowed to be None."
+            is_float = (
+                isinstance(train_size, float),
+                isinstance(val_size, float),
+                isinstance(test_size, float),
+            )
+
+            train_size = round(dset_len * train_size) if is_float[0] else train_size
+            val_size = round(dset_len * val_size) if is_float[1] else val_size
+            test_size = round(dset_len * test_size) if is_float[2] else test_size
+
+            if train_size is None:
+                train_size = dset_len - val_size - test_size
+            elif val_size is None:
+                val_size = dset_len - train_size - test_size
+            elif test_size is None:
+                test_size = dset_len - train_size - val_size
+
+            if train_size + val_size + test_size > dset_len:
+                if is_float[2]:
+                    test_size -= 1
+                elif is_float[1]:
+                    val_size -= 1
+                elif is_float[0]:
+                    train_size -= 1
+
+            assert train_size >= 0 and val_size >= 0 and test_size >= 0, (
+                f"One of training ({train_size}), validation ({val_size}) or "
+                f"testing ({test_size}) splits ended up with a negative size."
+            )
+
+            total = train_size + val_size + test_size
+            assert dset_len >= total, (
+                f"The dataset ({dset_len}) is smaller than the "
+                f"combined split sizes ({total})."
+            )
+            if total < dset_len:
+                rank_zero_warn(f"{dset_len - total} samples were excluded from the dataset")
+
+            idxs = np.arange(dset_len, dtype=np.int)
+            # random order
+            idxs = np.random.default_rng(seed).permutation(idxs)
+
+            idx_train = np.array(idxs[:train_size])
+            idx_val = np.array(idxs[train_size : train_size + val_size])
+            idx_test = np.array(idxs[train_size + val_size : total])
+
+        # logging
+        filename = join(self.hparams["log_dir"], "splits.npz")
+        if filename is not None:
+            np.savez(filename, idx_train=idx_train, idx_val=idx_val, idx_test=idx_test)
+
+        self.idx_train = torch.from_numpy(idx_train)
+        self.idx_val = torch.from_numpy(idx_val)
+        self.idx_test = torch.from_numpy(idx_test)
+
         print(
             f"train {len(self.idx_train)}, val {len(self.idx_val)}, test {len(self.idx_test)}"
         )
@@ -239,6 +260,7 @@ def make_splits(
         torch.from_numpy(idx_val),
         torch.from_numpy(idx_test),
     )
+
 def train_val_test_split(dset_len, train_size, val_size, test_size, seed, order=None):
     assert (train_size is None) + (val_size is None) + (
         test_size is None
@@ -594,6 +616,7 @@ class TorchMD_Net(nn.Module):
         out = self.output_model.post_reduce(out)
 
         return out, noise_pred, None
+
 class Distance(nn.Module):
     def __init__(
         self,
@@ -640,6 +663,7 @@ class Distance(nn.Module):
         # TODO: return only `edge_index` and `edge_weight` once
         # Union typing works with TorchScript (https://github.com/pytorch/pytorch/pull/53180)
         return edge_index, edge_weight, None
+
 class CosineCutoff(nn.Module):
     def __init__(self, cutoff_lower=0.0, cutoff_upper=5.0):
         super(CosineCutoff, self).__init__()
@@ -669,6 +693,8 @@ class CosineCutoff(nn.Module):
             # remove contributions beyond the cutoff radius
             cutoffs = cutoffs * (distances < self.cutoff_upper).float()
             return cutoffs
+
+
 class EquivariantMultiHeadAttention(MessagePassing):
     def __init__(
         self,
@@ -814,6 +840,7 @@ class EquivariantMultiHeadAttention(MessagePassing):
         self, inputs: Tuple[torch.Tensor, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         return inputs
+
 class EquivariantLayerNorm(nn.Module):
     r"""Rotationally-equivariant Vector Layer Normalization
     Expects inputs with shape (N, n, d), where N is batch size, n is vector dimension, d is width/number of vectors.
@@ -1257,6 +1284,7 @@ class NeighborEmbedding(MessagePassing):
 
     def message(self, x_j, W):
         return x_j * W
+
 class ExpNormalSmearing(nn.Module):
     def __init__(self, cutoff_lower=0.0, cutoff_upper=5.0, num_rbf=50, trainable=True):
         super(ExpNormalSmearing, self).__init__()
@@ -1356,6 +1384,7 @@ def number(text):
     if num_int == num_float:
         return num_int
     return num_float
+
 class GatedEquivariantBlock(nn.Module):
     """Gated Equivariant Block as defined in Schütt et al. (2021):
     Equivariant message passing for the prediction of tensorial properties and molecular spectra
@@ -1429,6 +1458,7 @@ class BaseWrapper(nn.Module, metaclass=ABCMeta):
     @abstractmethod
     def forward(self, z, pos, batch=None):
         return
+
 class AtomFilter(BaseWrapper):
     def __init__(self, model, remove_threshold):
         super(AtomFilter, self).__init__(model)
@@ -1469,6 +1499,7 @@ class OutputModel(nn.Module, metaclass=ABCMeta):
 
     def post_reduce(self, x):
         return x
+
 class EquivariantScalar(OutputModel):
     def __init__(self, hidden_channels, activation="silu", allow_prior_model=True):
         super(EquivariantScalar, self).__init__(allow_prior_model=allow_prior_model)
@@ -1495,6 +1526,7 @@ class EquivariantScalar(OutputModel):
             x, v = layer(x, v)
         # include v in output to make sure all parameters have a gradient
         return x + v.sum() * 0
+
 class EquivariantVectorOutput(EquivariantScalar):
     def __init__(self, hidden_channels, activation="silu"):
         super(EquivariantVectorOutput, self).__init__(
