@@ -367,6 +367,15 @@ class TorchMD_Net(nn.Module):
         position_noise_scale=0.,
     ):
         super(TorchMD_Net, self).__init__()
+        # representation_model = TorchMD_ET(
+        #     attn_activation='silu',
+        #     num_heads=args["num_heads"],
+        #     distance_influence=args["distance_influence"],
+        #     layernorm_on_vec='whitened',
+        #     # **shared_args,
+        # )
+           
+
         self.representation_model = representation_model
         self.output_model = output_model
 
@@ -382,7 +391,10 @@ class TorchMD_Net(nn.Module):
 
         self.reduce_op = reduce_op
         self.derivative = derivative
+        
+        # output_model_noise = EquivariantVectorOutput(hidden_channels = 256, activation = 'silu')
         self.output_model_noise = output_model_noise        
+        
         self.position_noise_scale = position_noise_scale
 
         mean = torch.scalar_tensor(0) if mean is None else mean
@@ -939,7 +951,7 @@ class TorchMD_ET(nn.Module):
 
 def create_model(args, prior_model=None, mean=None, std=None):
     shared_args = dict(
-        hidden_channels=args["embedding_dimension"],
+        hidden_channels=256,
         num_layers=args["num_layers"],
         num_rbf=args["num_rbf"],
         rbf_type=args["rbf_type"],
@@ -961,14 +973,11 @@ def create_model(args, prior_model=None, mean=None, std=None):
         **shared_args,
     )
     
-    # atom filter
-    representation_model = AtomFilter(representation_model, args["atom_filter"])
-    
     # create output network
-    output_model = EquivariantScalar(args["embedding_dimension"], activation = 'silu')
+    output_model = EquivariantScalar(hidden_channels=256, activation='silu')
 
     # create the denoising output network
-    output_model_noise = EquivariantVectorOutput(args["embedding_dimension"], activation = 'silu')
+    output_model_noise = EquivariantVectorOutput(hidden_channels=256, activation='silu')
     
     # combine representation and output network
     model = TorchMD_Net(
@@ -1274,47 +1283,6 @@ class BaseWrapper(nn.Module, metaclass=ABCMeta):
     def forward(self, z, pos, batch=None):
         return
 
-class AtomFilter(BaseWrapper):
-    def __init__(self, model, remove_threshold):
-        super(AtomFilter, self).__init__(model)
-        self.remove_threshold = remove_threshold
-
-    def forward(self, z, pos, batch=None):
-        x, v, z, pos, batch = self.model(z, pos, batch=batch)
-
-        n_samples = len(batch.unique())
-
-        # drop atoms according to the filter
-        atom_mask = z > self.remove_threshold
-        x = x[atom_mask]
-        if v is not None:
-            v = v[atom_mask]
-        z = z[atom_mask]
-        pos = pos[atom_mask]
-        batch = batch[atom_mask]
-
-        assert len(batch.unique()) == n_samples, (
-            "Some samples were completely filtered out by the atom filter. "
-            f"Make sure that at least one atom per sample exists with Z > {self.remove_threshold}."
-        )
-        return x, v, z, pos, batch
-
-# output model
-class OutputModel(nn.Module, metaclass=ABCMeta):
-    def __init__(self, allow_prior_model):
-        super(OutputModel, self).__init__()
-        self.allow_prior_model = allow_prior_model
-
-    def reset_parameters(self):
-        pass
-
-    @abstractmethod
-    def pre_reduce(self, x, v, z, pos, batch):
-        return
-
-    def post_reduce(self, x):
-        return x
-
 class EquivariantScalar(OutputModel):
     def __init__(self, hidden_channels, activation="silu", allow_prior_model=True):
         super(EquivariantScalar, self).__init__(allow_prior_model=allow_prior_model)
@@ -1359,7 +1327,7 @@ args = parser.parse_args()
 
 # args.activation = 'silu' # hardcopy
 args.aggr = 'add'
-args.atom_filter = -1
+# args.atom_filter = -1 # removed
 # args.attn_activation = 'silu' # hardcopy
 args.batch_size = 2
 args.conf = None
@@ -1376,7 +1344,7 @@ args.distance_influence = 'both'
 args.early_stopping_patience = 150
 args.ema_alpha_dy = 1.0
 args.ema_alpha_y = 1.0
-args.embedding_dimension = 256
+# args.embedding_dimension = 256 # hardcopy
 args.energy_weight = 0.0
 args.force_weight = 1.0
 args.inference_batch_size = 2
