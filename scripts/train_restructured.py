@@ -81,8 +81,8 @@ class DataModule(LightningDataModule):
             else:
                 transform = None
             
-            # self.dataset_test = torch.load('data/pcq/processed/pcqm4mv2__xyz.pt')[0]
-            # self.dataset_maybe_noisy = transform(self.dataset_test)
+            # self.dataset = torch.load('data/pcq/processed/pcqm4mv2__xyz.pt')[0]
+            # self.dataset_maybe_noisy = transform(self.dataset)
 
             # Noisy version of dataset
             self.dataset_maybe_noisy = PCQM4MV2_XYZ(
@@ -103,81 +103,61 @@ class DataModule(LightningDataModule):
         val_size = val_size = self.hparams["val_size"]
         test_size = self.hparams["test_size"]
         seed = self.hparams["seed"]
-        filename = join(self.hparams["log_dir"], "splits.npz")
-        splits = self.hparams["splits"]
-        order = None 
-        
-        if self.hparams["splits"] is not None:
-            splits = np.load(self.hparams["splits"])
-            idx_train = splits["idx_train"]
-            idx_val = splits["idx_val"]
-            idx_test = splits["idx_test"]
-        else:
-            assert (train_size is None) + (val_size is None) + (
-                test_size is None
-            ) <= 1, "Only one of train_size, val_size, test_size is allowed to be None."
-            is_float = (
-                isinstance(train_size, float),
-                isinstance(val_size, float),
-                isinstance(test_size, float),
-            )
 
-            train_size = round(dset_len * train_size) if is_float[0] else train_size
-            val_size = round(dset_len * val_size) if is_float[1] else val_size
-            test_size = round(dset_len * test_size) if is_float[2] else test_size
+        assert (train_size is None) + (val_size is None) + (
+            test_size is None
+        ) <= 1, "Only one of train_size, val_size, test_size is allowed to be None."
+        is_float = (
+            isinstance(train_size, float),
+            isinstance(val_size, float),
+            isinstance(test_size, float),
+        )
 
-            if train_size is None:
-                train_size = dset_len - val_size - test_size
-            elif val_size is None:
-                val_size = dset_len - train_size - test_size
-            elif test_size is None:
-                test_size = dset_len - train_size - val_size
+        train_size = round(dset_len * train_size) if is_float[0] else train_size
+        val_size = round(dset_len * val_size) if is_float[1] else val_size
+        test_size = round(dset_len * test_size) if is_float[2] else test_size
 
-            if train_size + val_size + test_size > dset_len:
-                if is_float[2]:
-                    test_size -= 1
-                elif is_float[1]:
-                    val_size -= 1
-                elif is_float[0]:
-                    train_size -= 1
+        if train_size is None:
+            train_size = dset_len - val_size - test_size
+        elif val_size is None:
+            val_size = dset_len - train_size - test_size
+        elif test_size is None:
+            test_size = dset_len - train_size - val_size
 
-            assert train_size >= 0 and val_size >= 0 and test_size >= 0, (
-                f"One of training ({train_size}), validation ({val_size}) or "
-                f"testing ({test_size}) splits ended up with a negative size."
-            )
+        if train_size + val_size + test_size > dset_len:
+            if is_float[2]:
+                test_size -= 1
+            elif is_float[1]:
+                val_size -= 1
+            elif is_float[0]:
+                train_size -= 1
 
-            total = train_size + val_size + test_size
-            assert dset_len >= total, (
-                f"The dataset ({dset_len}) is smaller than the "
-                f"combined split sizes ({total})."
-            )
-            if total < dset_len:
-                rank_zero_warn(f"{dset_len - total} samples were excluded from the dataset")
+        assert train_size >= 0 and val_size >= 0 and test_size >= 0, (
+            f"One of training ({train_size}), validation ({val_size}) or "
+            f"testing ({test_size}) splits ended up with a negative size."
+        )
 
-            idxs = np.arange(dset_len, dtype=np.int)
-            # random order
-            idxs = np.random.default_rng(seed).permutation(idxs)
+        total = train_size + val_size + test_size
+        assert dset_len >= total, (
+            f"The dataset ({dset_len}) is smaller than the "
+            f"combined split sizes ({total})."
+        )
+        if total < dset_len:
+            rank_zero_warn(f"{dset_len - total} samples were excluded from the dataset")
 
-            idx_train = np.array(idxs[:train_size])
-            idx_val = np.array(idxs[train_size : train_size + val_size])
-            idx_test = np.array(idxs[train_size + val_size : total])
+        # random order
+        idxs = np.arange(dset_len, dtype=np.int)
+        idxs = np.random.default_rng(seed).permutation(idxs)
 
-        # logging
-        filename = join(self.hparams["log_dir"], "splits.npz")
-        if filename is not None:
-            np.savez(filename, idx_train=idx_train, idx_val=idx_val, idx_test=idx_test)
-
-        self.idx_train = torch.from_numpy(idx_train)
-        self.idx_val = torch.from_numpy(idx_val)
-        self.idx_test = torch.from_numpy(idx_test)
+        self.idx_train = torch.from_numpy(np.array(idxs[:train_size]))
+        self.idx_val = torch.from_numpy(np.array(idxs[train_size : train_size + val_size]))
+        self.idx_test = torch.from_numpy(np.array(idxs[train_size + val_size : total]))
 
         print(
             f"train {len(self.idx_train)}, val {len(self.idx_val)}, test {len(self.idx_test)}"
         )
 
         self.train_dataset = Subset(self.dataset_maybe_noisy, self.idx_train)
-
-        # If denoising is the only task, test/val datasets are also used for measuring denoising performance.
         self.val_dataset = Subset(self.dataset_maybe_noisy, self.idx_val)
         self.test_dataset = Subset(self.dataset_maybe_noisy, self.idx_test)            
 
@@ -232,92 +212,6 @@ class DataModule(LightningDataModule):
             self._saved_dataloaders[stage] = dl
         return dl
 
-def make_splits(
-    dataset_len,
-    train_size,
-    val_size,
-    test_size,
-    seed,
-    filename=None,
-    splits=None,
-    order=None,
-):
-    if splits is not None:
-        splits = np.load(splits)
-        idx_train = splits["idx_train"]
-        idx_val = splits["idx_val"]
-        idx_test = splits["idx_test"]
-    else:
-        idx_train, idx_val, idx_test = train_val_test_split(
-            dataset_len, train_size, val_size, test_size, seed, order
-        )
-
-    if filename is not None:
-        np.savez(filename, idx_train=idx_train, idx_val=idx_val, idx_test=idx_test)
-
-    return (
-        torch.from_numpy(idx_train),
-        torch.from_numpy(idx_val),
-        torch.from_numpy(idx_test),
-    )
-
-def train_val_test_split(dset_len, train_size, val_size, test_size, seed, order=None):
-    assert (train_size is None) + (val_size is None) + (
-        test_size is None
-    ) <= 1, "Only one of train_size, val_size, test_size is allowed to be None."
-    is_float = (
-        isinstance(train_size, float),
-        isinstance(val_size, float),
-        isinstance(test_size, float),
-    )
-
-    train_size = round(dset_len * train_size) if is_float[0] else train_size
-    val_size = round(dset_len * val_size) if is_float[1] else val_size
-    test_size = round(dset_len * test_size) if is_float[2] else test_size
-
-    if train_size is None:
-        train_size = dset_len - val_size - test_size
-    elif val_size is None:
-        val_size = dset_len - train_size - test_size
-    elif test_size is None:
-        test_size = dset_len - train_size - val_size
-
-    if train_size + val_size + test_size > dset_len:
-        if is_float[2]:
-            test_size -= 1
-        elif is_float[1]:
-            val_size -= 1
-        elif is_float[0]:
-            train_size -= 1
-
-    assert train_size >= 0 and val_size >= 0 and test_size >= 0, (
-        f"One of training ({train_size}), validation ({val_size}) or "
-        f"testing ({test_size}) splits ended up with a negative size."
-    )
-
-    total = train_size + val_size + test_size
-    assert dset_len >= total, (
-        f"The dataset ({dset_len}) is smaller than the "
-        f"combined split sizes ({total})."
-    )
-    if total < dset_len:
-        rank_zero_warn(f"{dset_len - total} samples were excluded from the dataset")
-
-    idxs = np.arange(dset_len, dtype=np.int)
-    if order is None:
-        idxs = np.random.default_rng(seed).permutation(idxs)
-
-    idx_train = idxs[:train_size]
-    idx_val = idxs[train_size : train_size + val_size]
-    idx_test = idxs[train_size + val_size : total]
-
-    if order is not None:
-        idx_train = [order[i] for i in idx_train]
-        idx_val = [order[i] for i in idx_val]
-        idx_test = [order[i] for i in idx_test]
-
-    return np.array(idx_train), np.array(idx_val), np.array(idx_test)
-
 class LNNP(LightningModule):
     def __init__(self, hparams, prior_model=None, mean=None, std=None):
         super(LNNP, self).__init__()
@@ -344,15 +238,13 @@ class LNNP(LightningModule):
             lr=self.hparams.lr,
             weight_decay=self.hparams.weight_decay,
         )
-        if self.hparams.lr_schedule == 'cosine':
-            scheduler = CosineAnnealingLR(optimizer, self.hparams.lr_cosine_length)
-            lr_scheduler = {
-                "scheduler": scheduler,
-                "interval": "step",
-                "frequency": 1,
-            }
-        else:
-            raise ValueError(f"Unknown lr_schedule: {self.hparams.lr_schedule}")
+        
+        lr_scheduler = {
+            "scheduler": CosineAnnealingLR(optimizer, 400000),
+            "interval": "step",
+            "frequency": 1,
+        }
+        
         return [optimizer], [lr_scheduler]
 
     def forward(self, z, pos, batch=None):
@@ -373,46 +265,13 @@ class LNNP(LightningModule):
 
     def step(self, batch, loss_fn, stage):
         with torch.set_grad_enabled(stage == "train" or self.hparams.derivative):
-            # TODO: the model doesn't necessarily need to return a derivative once
-            # Union typing works under TorchScript (https://github.com/pytorch/pytorch/pull/53180)
-            pred, noise_pred, deriv = self(batch.z, batch.pos, batch.batch)
-
-        denoising_is_on = ("pos_target" in batch) and (self.hparams.denoising_weight > 0) and (noise_pred is not None)
+            noise_pred = self(batch.z, batch.pos, batch.batch)[1]
 
         loss_y, loss_dy, loss_pos = 0, 0, 0
-        
-        if "y" in batch:
-            if (noise_pred is not None) and not denoising_is_on:
-                # "use" both outputs of the model's forward (see comment above).
-                pred = pred + noise_pred.sum() * 0
-
-            if batch.y.ndim == 1:
-                batch.y = batch.y.unsqueeze(1)
-
-            # energy/prediction loss
-            loss_y = loss_fn(pred, batch.y)
-
-            if stage in ["train", "val"] and self.hparams.ema_alpha_y < 1:
-                if self.ema[stage + "_y"] is None:
-                    self.ema[stage + "_y"] = loss_y.detach()
-                # apply exponential smoothing over batches to y
-                loss_y = (
-                    self.hparams.ema_alpha_y * loss_y
-                    + (1 - self.hparams.ema_alpha_y) * self.ema[stage + "_y"]
-                )
-                self.ema[stage + "_y"] = loss_y.detach()
-
-            if self.hparams.energy_weight > 0:
-                self.losses[stage + "_y"].append(loss_y.detach())
-
-        if denoising_is_on:
-            if "y" not in batch:
-                # "use" both outputs of the model's forward (see comment above).
-                noise_pred = noise_pred + pred.sum() * 0
-                
-            normalized_pos_target = self.model.pos_normalizer(batch.pos_target)
-            loss_pos = loss_fn(noise_pred, normalized_pos_target)
-            self.losses[stage + "_pos"].append(loss_pos.detach())
+          
+        normalized_pos_target = self.model.pos_normalizer(batch.pos_target)
+        loss_pos = loss_fn(noise_pred, normalized_pos_target)
+        self.losses[stage + "_pos"].append(loss_pos.detach())
 
         # total loss
         loss = loss_y * self.hparams.energy_weight + loss_dy * self.hparams.force_weight + loss_pos * self.hparams.denoising_weight
@@ -1570,18 +1429,18 @@ args.layernorm_on_vec = 'whitened'
 args.load_model = None
 args.log_dir = 'experiments/'
 args.lr = 0.0004
-args.lr_cosine_length = 400000
+# args.lr_cosine_length = 400000 # deleted
 args.lr_factor = 0.8
 args.lr_min = 1e-07
 args.lr_patience = 15
-args.lr_schedule = 'cosine'
+# args.lr_schedule = 'cosine' # deleted
 args.lr_warmup_steps = 10 # 10000
 args.max_num_neighbors = 32
 args.max_z = 100
 args.model = 'equivariant-transformer'
 args.neighbor_embedding = True
 args.ngpus = 1
-args.num_epochs = 3 # 30
+args.num_epochs = 1 # 30
 args.num_heads = 8
 args.num_layers = 2 # 8
 args.num_nodes = 1
@@ -1602,11 +1461,11 @@ args.seed = 1
 args.splits = None
 args.standardize = False 
 args.test_interval = 10
-args.test_size = 100
-args.train_size = 100 # None
+args.test_size = 20
+args.train_size = 20 # None
 args.trainable_rbf = False   
 args.val_size = 10
-args.wandb_notes = ''
+# args.wandb_notes = ''
 args.weight_decay = 0.0
 
 if __name__ == "__main__":
@@ -1627,14 +1486,14 @@ if __name__ == "__main__":
         args.log_dir, name="tensorbord", version="", default_hp_metric=False
     )
     # csv_logger = CSVLogger(args.log_dir, name="", version="")
-    wandb_logger = WandbLogger(name=args.job_id, project='pre-training-via-denoising', notes=args.wandb_notes, settings=wandb.Settings(start_method='fork', code_dir="."))
+    # wandb_logger = WandbLogger(name=args.job_id, project='pre-training-via-denoising', notes=args.wandb_notes, settings=wandb.Settings(start_method='fork', code_dir="."))
 
-    @rank_zero_only
-    def log_code():
-        wandb_logger.experiment # runs wandb.init, so then code can be logged next
-        wandb.run.log_code(".", include_fn=lambda path: path.endswith(".py") or path.endswith(".yaml"))
+    # @rank_zero_only
+    # def log_code():
+    #     wandb_logger.experiment # runs wandb.init, so then code can be logged next
+    #     wandb.run.log_code(".", include_fn=lambda path: path.endswith(".py") or path.endswith(".yaml"))
 
-    log_code()
+    # log_code()
 
     trainer = pl.Trainer(
         max_epochs=3, # args.num_epochs,
@@ -1646,7 +1505,7 @@ if __name__ == "__main__":
         auto_lr_find=False, # False,
         resume_from_checkpoint=None, # args.load_model,
         callbacks=None,
-        logger=[tb_logger, wandb_logger], # [tb_logger, csv_logger, wandb_logger],
+        logger=[tb_logger], # , wandb_logger], # [tb_logger, csv_logger, wandb_logger],
         reload_dataloaders_every_epoch=False, # False,
         precision=32, # args.precision,
         plugins=None, 
