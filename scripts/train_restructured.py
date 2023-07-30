@@ -86,15 +86,15 @@ class DataModule(LightningDataModule):
 
             # Noisy version of dataset
             self.dataset_maybe_noisy = PCQM4MV2_XYZ(
-                self.hparams["dataset_root"], 
-                dataset_arg=self.hparams["dataset_arg"], 
+                root='data/pcq', 
+                dataset_arg=None, 
                 transform = transform
             )
             
             # Clean version of dataset
             self.dataset = PCQM4MV2_XYZ(
-                self.hparams["dataset_root"], 
-                dataset_arg=self.hparams["dataset_arg"], 
+                root='data/pcq', 
+                dataset_arg=None, 
                 transform = None
             )
 
@@ -258,14 +258,14 @@ class LNNP(LightningModule):
         with torch.set_grad_enabled(stage == "train" or self.hparams.derivative):
             noise_pred = self(batch.z, batch.pos, batch.batch)[1]
 
-        loss_y, loss_dy, loss_pos = 0, 0, 0
+        loss_pos = 0
           
         normalized_pos_target = self.model.pos_normalizer(batch.pos_target)
         loss_pos = loss_fn(noise_pred, normalized_pos_target)
         self.losses[stage + "_pos"].append(loss_pos.detach())
 
         # total loss
-        loss = loss_y * self.hparams.energy_weight + loss_dy * self.hparams.force_weight + loss_pos * self.hparams.denoising_weight
+        loss = loss_pos
 
         self.losses[stage].append(loss.detach())
 
@@ -1252,39 +1252,22 @@ class EquivariantVectorOutput(EquivariantScalar):
 parser = argparse.ArgumentParser(description='Training')
 args = parser.parse_args()
 
-# args.activation = 'silu' # hardcopy
 args.aggr = 'add'
-# args.atom_filter = -1 # removed
-# args.attn_activation = 'silu' # hardcopy
 args.batch_size = 2
-args.conf = None
-# args.coord_files = None
 args.cutoff_lower = 0.0
 args.cutoff_upper = 5.0
-args.dataset = 'PCQM4MV2'
-args.dataset_arg = None
-args.dataset_root = 'data/pcq'
 args.denoising_only = True
-args.denoising_weight = 1.0
 args.derivative = False
 args.distance_influence = 'both'
 args.early_stopping_patience = 150
-args.ema_alpha_dy = 1.0
-args.ema_alpha_y = 1.0
-# args.embedding_dimension = 256 # hardcopy
-args.energy_weight = 0.0
-args.force_weight = 1.0
 args.inference_batch_size = 2
 args.job_id = 'pretraining'
-# args.layernorm_on_vec = 'whitened' # hardcopy
 args.load_model = None
 args.log_dir = 'experiments/'
 args.lr = 0.0004
-# args.lr_cosine_length = 400000 # hardcopy
 args.lr_factor = 0.8
 args.lr_min = 1e-07
 args.lr_patience = 15
-# args.lr_schedule = 'cosine' # hardcopy
 args.lr_warmup_steps = 10 # 10000
 args.max_num_neighbors = 32
 args.max_z = 100
@@ -1314,7 +1297,6 @@ args.standardize = False
 args.test_interval = 10
 args.test_size = 20
 args.train_size = 20 # None
-# args.trainable_rbf = False # hardcopy
 args.val_size = 10
 # args.wandb_notes = ''
 args.weight_decay = 0.0
