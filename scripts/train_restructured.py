@@ -943,8 +943,8 @@ def create_model(args, prior_model=None, mean=None, std=None):
         num_layers=args["num_layers"],
         num_rbf=args["num_rbf"],
         rbf_type=args["rbf_type"],
-        trainable_rbf=args["trainable_rbf"],
-        activation=args["activation"],
+        trainable_rbf=False,
+        activation='silu',
         neighbor_embedding=args["neighbor_embedding"],
         cutoff_lower=args["cutoff_lower"],
         cutoff_upper=args["cutoff_upper"],
@@ -952,27 +952,23 @@ def create_model(args, prior_model=None, mean=None, std=None):
         max_num_neighbors=args["max_num_neighbors"],
     )
 
-    # representation network
-    if args["model"] == "equivariant-transformer":
-        is_equivariant = True
-        representation_model = TorchMD_ET(
-            attn_activation=args["attn_activation"],
-            num_heads=args["num_heads"],
-            distance_influence=args["distance_influence"],
-            layernorm_on_vec=args["layernorm_on_vec"],
-            **shared_args,
-        )
-    else:
-        raise ValueError(f'Unknown architecture: {args["model"]}')
-
+    # representation network "equivariant-transformer"
+    representation_model = TorchMD_ET(
+        attn_activation='silu',
+        num_heads=args["num_heads"],
+        distance_influence=args["distance_influence"],
+        layernorm_on_vec='whitened',
+        **shared_args,
+    )
+    
     # atom filter
     representation_model = AtomFilter(representation_model, args["atom_filter"])
     
     # create output network
-    output_model = EquivariantScalar(args["embedding_dimension"], args["activation"])
+    output_model = EquivariantScalar(args["embedding_dimension"], activation = 'silu')
 
     # create the denoising output network
-    output_model_noise = EquivariantVectorOutput(args["embedding_dimension"], args["activation"])
+    output_model_noise = EquivariantVectorOutput(args["embedding_dimension"], activation = 'silu')
     
     # combine representation and output network
     model = TorchMD_Net(
@@ -1361,10 +1357,10 @@ class EquivariantVectorOutput(EquivariantScalar):
 parser = argparse.ArgumentParser(description='Training')
 args = parser.parse_args()
 
-args.activation = 'silu'
+# args.activation = 'silu' # hardcopy
 args.aggr = 'add'
 args.atom_filter = -1
-args.attn_activation = 'silu'
+# args.attn_activation = 'silu' # hardcopy
 args.batch_size = 2
 args.conf = None
 # args.coord_files = None
@@ -1385,15 +1381,15 @@ args.energy_weight = 0.0
 args.force_weight = 1.0
 args.inference_batch_size = 2
 args.job_id = 'pretraining'
-args.layernorm_on_vec = 'whitened'
+# args.layernorm_on_vec = 'whitened' # hardcopy
 args.load_model = None
 args.log_dir = 'experiments/'
 args.lr = 0.0004
-# args.lr_cosine_length = 400000 # deleted
+# args.lr_cosine_length = 400000 # hardcopy
 args.lr_factor = 0.8
 args.lr_min = 1e-07
 args.lr_patience = 15
-# args.lr_schedule = 'cosine' # deleted
+# args.lr_schedule = 'cosine' # hardcopy
 args.lr_warmup_steps = 10 # 10000
 args.max_num_neighbors = 32
 args.max_z = 100
@@ -1423,7 +1419,7 @@ args.standardize = False
 args.test_interval = 10
 args.test_size = 20
 args.train_size = 20 # None
-args.trainable_rbf = False   
+# args.trainable_rbf = False # hardcopy
 args.val_size = 10
 # args.wandb_notes = ''
 args.weight_decay = 0.0
