@@ -224,10 +224,6 @@ class LNNP(LightningModule):
         else:
             self.model = create_model(self.hparams, prior_model, mean, std)
 
-        # initialize exponential smoothing
-        self.ema = None
-        self._reset_ema_dict()
-
         # initialize loss collection
         self.losses = None
         self._reset_losses_dict()
@@ -314,7 +310,6 @@ class LNNP(LightningModule):
                 # than skipping test validation steps by returning None
                 self.trainer.reset_val_dataloader(self)
 
-    # TODO(shehzaidi): clean up this function, redundant logging if dy loss exists.
     def validation_epoch_end(self, validation_step_outputs):
         if not self.trainer.running_sanity_check:
             # construct dict of logged metrics
@@ -328,32 +323,6 @@ class LNNP(LightningModule):
             # add test loss if available
             if len(self.losses["test"]) > 0:
                 result_dict["test_loss"] = torch.stack(self.losses["test"]).mean()
-
-            # if prediction and derivative are present, also log them separately
-            if len(self.losses["train_y"]) > 0 and len(self.losses["train_dy"]) > 0:
-                result_dict["train_loss_y"] = torch.stack(self.losses["train_y"]).mean()
-                result_dict["train_loss_dy"] = torch.stack(
-                    self.losses["train_dy"]
-                ).mean()
-                result_dict["val_loss_y"] = torch.stack(self.losses["val_y"]).mean()
-                result_dict["val_loss_dy"] = torch.stack(self.losses["val_dy"]).mean()
-
-                if len(self.losses["test"]) > 0:
-                    result_dict["test_loss_y"] = torch.stack(
-                        self.losses["test_y"]
-                    ).mean()
-                    result_dict["test_loss_dy"] = torch.stack(
-                        self.losses["test_dy"]
-                    ).mean()
-
-            if len(self.losses["train_y"]) > 0:
-                result_dict["train_loss_y"] = torch.stack(self.losses["train_y"]).mean()
-            if len(self.losses['val_y']) > 0:
-              result_dict["val_loss_y"] = torch.stack(self.losses["val_y"]).mean()
-            if len(self.losses["test_y"]) > 0:
-                result_dict["test_loss_y"] = torch.stack(
-                    self.losses["test_y"]
-                ).mean()
 
             # if denoising is present, also log it
             if len(self.losses["train_pos"]) > 0:
@@ -379,19 +348,10 @@ class LNNP(LightningModule):
             "train": [],
             "val": [],
             "test": [],
-            "train_y": [],
-            "val_y": [],
-            "test_y": [],
-            "train_dy": [],
-            "val_dy": [],
-            "test_dy": [],
             "train_pos": [],
             "val_pos": [],
             "test_pos": [],
         }
-
-    def _reset_ema_dict(self):
-        self.ema = {"train_y": None, "val_y": None, "train_dy": None, "val_dy": None}
 
 class TorchMD_Net(nn.Module):
     def __init__(
