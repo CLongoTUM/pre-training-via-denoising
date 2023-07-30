@@ -17,7 +17,7 @@ import yaml
 import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
 from pytorch_lightning import LightningDataModule
-from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.utilities import rank_zero_only, rank_zero_warn
 
 ## torch
@@ -217,12 +217,7 @@ class LNNP(LightningModule):
         super(LNNP, self).__init__()
         self.save_hyperparameters(hparams)
 
-        if self.hparams.load_model:
-            self.model = load_model(self.hparams.load_model, args=self.hparams)
-        elif self.hparams.pretrained_model:
-            self.model = load_model(self.hparams.pretrained_model, args=self.hparams, mean=mean, std=std)
-        else:
-            self.model = create_model(self.hparams, prior_model, mean, std)
+        self.model = create_model(self.hparams, prior_model, mean, std)
 
         # initialize loss collection
         self.losses = None
@@ -366,35 +361,14 @@ class TorchMD_Net(nn.Module):
         output_model_noise=None,
         position_noise_scale=0.,
     ):
-        super(TorchMD_Net, self).__init__()
-        # representation_model = TorchMD_ET(
-        #     attn_activation='silu',
-        #     num_heads=args["num_heads"],
-        #     distance_influence=args["distance_influence"],
-        #     layernorm_on_vec='whitened',
-        #     # **shared_args,
-        # )
-           
+        super(TorchMD_Net, self).__init__()        
 
         self.representation_model = representation_model
         self.output_model = output_model
 
-        self.prior_model = prior_model
-        if not output_model.allow_prior_model and prior_model is not None:
-            self.prior_model = None
-            rank_zero_warn(
-                (
-                    "Prior model was given but the output model does "
-                    "not allow prior models. Dropping the prior model."
-                )
-            )
-
         self.reduce_op = reduce_op
         self.derivative = derivative
-        
-        # output_model_noise = EquivariantVectorOutput(hidden_channels = 256, activation = 'silu')
         self.output_model_noise = output_model_noise        
-        
         self.position_noise_scale = position_noise_scale
 
         mean = torch.scalar_tensor(0) if mean is None else mean
@@ -410,17 +384,15 @@ class TorchMD_Net(nn.Module):
     def reset_parameters(self):
         self.representation_model.reset_parameters()
         self.output_model.reset_parameters()
-        if self.prior_model is not None:
-            self.prior_model.reset_parameters()
 
     def forward(self, z, pos, batch: Optional[torch.Tensor] = None):
         assert z.dim() == 1 and z.dtype == torch.long
         batch = torch.zeros_like(z) if batch is None else batch
 
-        # run the potentially wrapped representation model
+        # run the representation model: representation_model = TorchMD_ET()
         x, v, z, pos, batch = self.representation_model(z, pos, batch=batch)
 
-        # predict noise
+        # predict noise: output_model_noise = EquivariantVectorOutput()
         noise_pred = None
         if self.output_model_noise is not None:
             noise_pred = self.output_model_noise.pre_reduce(x, v, z, pos, batch) 
@@ -431,10 +403,6 @@ class TorchMD_Net(nn.Module):
         # scale by data standard deviation
         if self.std is not None:
             x = x * self.std
-
-        # apply prior model
-        if self.prior_model is not None:
-            x = self.prior_model(x, z, pos, batch)
 
         # aggregate atoms
         out = scatter(x, batch, dim=0, reduce=self.reduce_op)
@@ -983,7 +951,7 @@ def create_model(args, prior_model=None, mean=None, std=None):
     model = TorchMD_Net(
         representation_model,
         output_model,
-        prior_model=prior_model,
+        prior_model=None,
         reduce_op=args["reduce_op"],
         mean=mean,
         std=std,
@@ -1153,36 +1121,6 @@ class ExpNormalSmearing(nn.Module):
         )
 rbf_class_mapping = {"expnorm": ExpNormalSmearing}
 act_class_mapping = {"silu": nn.SiLU}
-
-class LoadFromFile(argparse.Action):
-    # parser.add_argument('--file', type=open, action=LoadFromFile)
-    def __call__(self, parser, namespace, values, option_string=None):
-        if values.name.endswith("yaml") or values.name.endswith("yml"):
-            with values as f:
-                config = yaml.load(f, Loader=yaml.FullLoader)
-            for key in config.keys():
-                if key not in namespace:
-                    raise ValueError(f"Unknown argument in config file: {key}")
-            namespace.__dict__.update(config)
-        else:
-            raise ValueError("Configuration file must end with yaml or yml")
-
-class LoadFromCheckpoint(argparse.Action):
-    # parser.add_argument('--file', type=open, action=LoadFromFile)
-    def __call__(self, parser, namespace, values, option_string=None):
-        hparams_path = join(dirname(values), "hparams.yaml")
-        if not exists(hparams_path):
-            print(
-                "Failed to locate the checkpoint's hparams.yaml file. Relying on command line args."
-            )
-            return
-        with open(hparams_path, "r") as f:
-            config = yaml.load(f, Loader=yaml.FullLoader)
-        for key in config.keys():
-            if key not in namespace and key != "prior_args":
-                raise ValueError(f"Unknown argument in the model checkpoint: {key}")
-        namespace.__dict__.update(config)
-        namespace.__dict__.update(load_model=values)
 
 def save_argparse(args, filename, exclude=None):
     if filename.endswith("yaml") or filename.endswith("yml"):
@@ -1420,17 +1358,17 @@ if __name__ == "__main__":
     # log_code()
 
     trainer = pl.Trainer(
-        max_epochs=3, # args.num_epochs,
-        max_steps=400, #args.num_steps,
-        gpus=args.ngpus, # args.ngpus,
-        num_nodes=1, # args.num_nodes,
+        max_epochs=args.num_epochs,
+        max_steps=args.num_steps,
+        gpus=args.ngpus,
+        num_nodes=args.num_nodes,
         accelerator=None, # args.distributed_backend,
         default_root_dir="experiments/", # args.log_dir,
-        auto_lr_find=False, # False,
+        auto_lr_find=False,
         resume_from_checkpoint=None, # args.load_model,
         callbacks=None,
         logger=[tb_logger], # , wandb_logger], # [tb_logger, csv_logger, wandb_logger],
-        reload_dataloaders_every_epoch=False, # False,
+        reload_dataloaders_every_epoch=False,
         precision=32, # args.precision,
         plugins=None, 
     )
@@ -1438,4 +1376,4 @@ if __name__ == "__main__":
     trainer.fit(model, data)
 
     # run test set after completing the fit
-    trainer.test()  
+    trainer.test()
