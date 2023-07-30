@@ -520,7 +520,7 @@ class EquivariantMultiHeadAttention(MessagePassing):
 
         self.layernorm = nn.LayerNorm(hidden_channels)
         self.act = activation()
-        self.attn_activation = act_class_mapping[attn_activation]()
+        self.attn_activation = nn.SiLU()
         self.cutoff = CosineCutoff(cutoff_lower, cutoff_upper)
 
         self.q_proj = nn.Linear(hidden_channels, hidden_channels)
@@ -789,18 +789,9 @@ class TorchMD_ET(nn.Module):
         super(TorchMD_ET, self).__init__()
 
         assert distance_influence in ["keys", "values", "both", "none"]
-        assert rbf_type in rbf_class_mapping, (
-            f'Unknown RBF type "{rbf_type}". '
-            f'Choose from {", ".join(rbf_class_mapping.keys())}.'
-        )
-        assert activation in act_class_mapping, (
-            f'Unknown activation function "{activation}". '
-            f'Choose from {", ".join(act_class_mapping.keys())}.'
-        )
-        assert attn_activation in act_class_mapping, (
-            f'Unknown attention activation function "{attn_activation}". '
-            f'Choose from {", ".join(act_class_mapping.keys())}.'
-        )
+        assert rbf_type in ['expnorm']
+        assert activation in ['silu']
+        assert attn_activation in ['silu']
 
         self.hidden_channels = hidden_channels
         self.num_layers = num_layers
@@ -817,7 +808,7 @@ class TorchMD_ET(nn.Module):
         self.max_z = max_z
         self.layernorm_on_vec = layernorm_on_vec
 
-        act_class = act_class_mapping[activation]
+        act_class = nn.SiLU
 
         self.embedding = nn.Embedding(self.max_z, hidden_channels)
 
@@ -828,7 +819,7 @@ class TorchMD_ET(nn.Module):
             return_vecs=True,
             loop=True,
         )
-        self.distance_expansion = rbf_class_mapping[rbf_type](
+        self.distance_expansion = ExpNormalSmearing(
             cutoff_lower, cutoff_upper, num_rbf, trainable_rbf
         )
         self.neighbor_embedding = (
@@ -1119,9 +1110,7 @@ class ExpNormalSmearing(nn.Module):
             -self.betas
             * (torch.exp(self.alpha * (-dist + self.cutoff_lower)) - self.means) ** 2
         )
-rbf_class_mapping = {"expnorm": ExpNormalSmearing}
-act_class_mapping = {"silu": nn.SiLU}
-
+    
 def save_argparse(args, filename, exclude=None):
     if filename.endswith("yaml") or filename.endswith("yml"):
         if isinstance(exclude, str):
@@ -1169,7 +1158,7 @@ class GatedEquivariantBlock(nn.Module):
         self.vec1_proj = nn.Linear(hidden_channels, hidden_channels, bias=False)
         self.vec2_proj = nn.Linear(hidden_channels, out_channels, bias=False)
 
-        act_class = act_class_mapping[activation]
+        act_class = nn.SiLU
         self.update_net = nn.Sequential(
             nn.Linear(hidden_channels * 2, intermediate_channels),
             act_class(),
