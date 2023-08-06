@@ -1,12 +1,9 @@
 import numpy as np  # sometimes needed to avoid mkl-service error
-import os
 from os.path import dirname, join, exists
 from tqdm import tqdm
 import argparse
 import wandb
 from typing import Optional, Callable, List, Tuple
-import glob
-import ase
 import re
 import warnings
 from abc import abstractmethod, ABCMeta
@@ -25,13 +22,13 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.nn.functional import mse_loss, l1_loss
 from torch.utils.data import Subset
 from torch.autograd import grad
 from torch.nn.parameter import Parameter
 from torch_scatter import scatter
-from torch_geometric.data import InMemoryDataset, download_url, extract_zip, Data, DataLoader
+from torch_geometric.data import InMemoryDataset, DataLoader
 from torch_geometric.nn import MessagePassing
 from torch_cluster import radius_graph
 
@@ -239,6 +236,7 @@ class LNNP(LightningModule):
         return [optimizer], [lr_scheduler]
 
     def forward(self, z, pos, batch=None):
+        # run forward step of the TorchMD_Net model
         return self.model(z, pos, batch=batch)
 
     def training_step(self, batch, batch_idx):
@@ -255,11 +253,12 @@ class LNNP(LightningModule):
         return self.step(batch, l1_loss, "test")
 
     def step(self, batch, loss_fn, stage):
-        with torch.set_grad_enabled(stage == "train" or self.hparams.derivative):
-            noise_pred = self(batch.z, batch.pos, batch.batch)[1]
+        with torch.set_grad_enabled(stage == "train"):
+            # call forward step of the model
+            noise_pred = self(batch.z, batch.pos, batch.batch)
 
         loss_pos = 0
-          
+         
         normalized_pos_target = self.model.pos_normalizer(batch.pos_target)
         loss_pos = loss_fn(noise_pred, normalized_pos_target)
         self.losses[stage + "_pos"].append(loss_pos.detach())
@@ -352,9 +351,9 @@ class TorchMD_Net(nn.Module):
     def __init__(
         self,
         representation_model,
-        output_model,
+        output_model=None,
         prior_model=None,
-        reduce_op="add",
+        reduce_op='add',
         mean=None,
         std=None,
         derivative=False,
@@ -364,7 +363,6 @@ class TorchMD_Net(nn.Module):
         super(TorchMD_Net, self).__init__()        
 
         self.representation_model = representation_model
-        self.output_model = output_model
 
         self.reduce_op = reduce_op
         self.derivative = derivative
@@ -383,7 +381,6 @@ class TorchMD_Net(nn.Module):
 
     def reset_parameters(self):
         self.representation_model.reset_parameters()
-        self.output_model.reset_parameters()
 
     def forward(self, z, pos, batch: Optional[torch.Tensor] = None):
         assert z.dim() == 1 and z.dtype == torch.long
@@ -393,28 +390,9 @@ class TorchMD_Net(nn.Module):
         x, v, z, pos, batch = self.representation_model(z, pos, batch=batch)
 
         # predict noise: output_model_noise = EquivariantVectorOutput()
-        noise_pred = None
-        if self.output_model_noise is not None:
-            noise_pred = self.output_model_noise.pre_reduce(x, v, z, pos, batch) 
+        noise_pred = self.output_model_noise.pre_reduce(x, v, z, pos, batch) 
 
-        # apply the output network
-        x = self.output_model.pre_reduce(x, v, z, pos, batch)
-
-        # scale by data standard deviation
-        if self.std is not None:
-            x = x * self.std
-
-        # aggregate atoms
-        out = scatter(x, batch, dim=0, reduce=self.reduce_op)
-
-        # shift by data mean
-        if self.mean is not None:
-            out = out + self.mean
-
-        # apply output model after reduction
-        out = self.output_model.post_reduce(out)
-
-        return out, noise_pred, None
+        return noise_pred
 
 class Distance(nn.Module):
     def __init__(
@@ -506,7 +484,7 @@ class EquivariantMultiHeadAttention(MessagePassing):
         cutoff_lower,
         cutoff_upper,
     ):
-        super(EquivariantMultiHeadAttention, self).__init__(aggr="add", node_dim=0)
+        super(EquivariantMultiHeadAttention, self).__init__(aggr='add', node_dim=0)
         assert hidden_channels % num_heads == 0, (
             f"The number of hidden channels ({hidden_channels}) "
             f"must be evenly divisible by the number of "
@@ -519,7 +497,7 @@ class EquivariantMultiHeadAttention(MessagePassing):
         self.head_dim = hidden_channels // num_heads
 
         self.layernorm = nn.LayerNorm(hidden_channels)
-        self.act = activation()
+        self.act = nn.SiLU()
         self.attn_activation = nn.SiLU()
         self.cutoff = CosineCutoff(cutoff_lower, cutoff_upper)
 
@@ -932,21 +910,18 @@ def create_model(args, prior_model=None, mean=None, std=None):
         **shared_args,
     )
     
-    # create output network
-    output_model = EquivariantScalar(hidden_channels=256, activation='silu')
-
     # create the denoising output network
     output_model_noise = EquivariantVectorOutput(hidden_channels=256, activation='silu')
     
     # combine representation and output network
     model = TorchMD_Net(
         representation_model,
-        output_model,
+        output_model=None,
         prior_model=None,
-        reduce_op=args["reduce_op"],
+        reduce_op='add',
         mean=mean,
         std=std,
-        derivative=args["derivative"],
+        derivative=False,
         output_model_noise=output_model_noise,
         position_noise_scale=args['position_noise_scale'],
     )
@@ -1033,7 +1008,7 @@ class OutputModel(nn.Module, metaclass=ABCMeta):
 
 class NeighborEmbedding(MessagePassing):
     def __init__(self, hidden_channels, num_rbf, cutoff_lower, cutoff_upper, max_z=100):
-        super(NeighborEmbedding, self).__init__(aggr="add")
+        super(NeighborEmbedding, self).__init__(aggr='add')
         self.embedding = nn.Embedding(max_z, hidden_channels)
         self.distance_proj = nn.Linear(num_rbf, hidden_channels)
         self.combine = nn.Linear(hidden_channels * 2, hidden_channels)
@@ -1210,9 +1185,9 @@ class BaseWrapper(nn.Module, metaclass=ABCMeta):
     def forward(self, z, pos, batch=None):
         return
 
-class EquivariantScalar(OutputModel):
+class EquivariantVectorOutput(OutputModel):
     def __init__(self, hidden_channels, activation="silu", allow_prior_model=True):
-        super(EquivariantScalar, self).__init__(allow_prior_model=allow_prior_model)
+        super(EquivariantVectorOutput, self).__init__(allow_prior_model=allow_prior_model)
         self.output_network = nn.ModuleList(
             [
                 GatedEquivariantBlock(
@@ -1234,25 +1209,12 @@ class EquivariantScalar(OutputModel):
     def pre_reduce(self, x, v, z, pos, batch):
         for layer in self.output_network:
             x, v = layer(x, v)
-        # include v in output to make sure all parameters have a gradient
-        return x + v.sum() * 0
-
-class EquivariantVectorOutput(EquivariantScalar):
-    def __init__(self, hidden_channels, activation="silu"):
-        super(EquivariantVectorOutput, self).__init__(
-            hidden_channels, activation, allow_prior_model=False
-        )
-
-    def pre_reduce(self, x, v, z, pos, batch):
-        for layer in self.output_network:
-            x, v = layer(x, v)
         return v.squeeze()
 
 # init args object (old: args = get_args())
 parser = argparse.ArgumentParser(description='Training')
 args = parser.parse_args()
 
-args.aggr = 'add'
 args.batch_size = 2
 args.cutoff_lower = 0.0
 args.cutoff_upper = 5.0
@@ -1274,14 +1236,13 @@ args.max_z = 100
 args.model = 'equivariant-transformer'
 args.neighbor_embedding = True
 args.ngpus = 1
-args.num_epochs = 1 # 30
+args.num_epochs = 2 # 30
 args.num_heads = 8
 args.num_layers = 2 # 8
 args.num_nodes = 1
 args.num_rbf = 64
 args.num_steps = 400 # 400000
 args.num_workers = 6
-args.output_model = 'Scalar'
 args.output_model_noise = 'VectorOutput'
 args.position_noise_scale = 0.04
 args.precision = 32
@@ -1289,7 +1250,6 @@ args.pretrained_model = None
 args.prior_model = None
 args.rbf_type = 'expnorm'
 args.redirect = False
-args.reduce_op = 'add'
 args.save_interval = 10
 args.seed = 1
 args.splits = None
